@@ -72,6 +72,7 @@ async fn upload_file(
         .into_owned();
 
     const MAX_SIZE: usize = 8 * 2usize.pow(20);
+    const MAX_FILES: usize = 10;
 
     let mut file = File::open(file)?;
     let mut n_files = 0;
@@ -98,20 +99,37 @@ async fn upload_file(
                 .into_owned()
         })
         .collect::<Vec<_>>();
-    let message = GLOBALS
-        .channel
-        .send_files(&GLOBALS.http, files.iter().map(String::as_str), |m| {
-            m.content(filename)
-        })
-        .await?;
+    let mut last_id = None;
+    for files in files.chunks(MAX_FILES).rev() {
+        let message = GLOBALS
+            .channel
+            .send_files(
+                &GLOBALS.http,
+                files.iter().map(String::as_str),
+                |m| match last_id {
+                    Some(id) => m.content(format!("{filename}\n{id}")),
+                    None => m.content(&filename),
+                },
+            )
+            .await?;
+        last_id = Some(message.id);
+    }
 
-    Ok(message.id)
+    Ok(last_id.unwrap())
 }
 
 async fn download_file(msg: impl Into<MessageId>) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let msg = GLOBALS.channel.message(&GLOBALS.http, msg).await?;
+    let mut msg = GLOBALS.channel.message(&GLOBALS.http, msg).await?;
 
-    let mut file_name = msg.content;
+    let mut file_name;
+    let mut next_id = None;
+    match msg.content.rsplit_once('\n') {
+        Some((name, id)) => {
+            file_name = name.to_owned();
+            next_id = Some(MessageId(id.parse()?));
+        }
+        None => file_name = msg.content,
+    }
     let mut file_path = PathBuf::from(&file_name);
     while file_path.exists() {
         file_name.push('_');
@@ -120,10 +138,22 @@ async fn download_file(msg: impl Into<MessageId>) -> Result<PathBuf, Box<dyn std
 
     let mut file = File::create(&file_path)?;
 
-    for at in msg.attachments {
-        let bytes = at.download().await?;
-        file.write_all(&bytes)?;
-    }
+    loop {
+        for at in msg.attachments {
+            let bytes = at.download().await?;
+            file.write_all(&bytes)?;
+        }
 
+        match next_id {
+            Some(id) => {
+                msg = GLOBALS.channel.message(&GLOBALS.http, id).await?;
+                match msg.content.rsplit_once('\n') {
+                    Some((_, id)) => next_id = Some(MessageId(id.parse()?)),
+                    None => next_id = None,
+                }
+            }
+            None => break,
+        }
+    }
     Ok(file_path)
 }
