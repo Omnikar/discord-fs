@@ -20,3 +20,8 @@ flags.
   (splitting if needed) and print the message ID.
 * `--download`: Given a message ID, download and consolidate the file
   from Discord and print the written file path.
+  
+## TOS Note
+
+This \*may\* be against Discord's TOS; I am not certain.
+Use at your own risk.
